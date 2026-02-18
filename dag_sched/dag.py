@@ -111,5 +111,9 @@ class DAGTaskBuilder:
     def build(self) -> DAGTask:
         successors: dict[int, list[int]] = {nid: [] for nid in self._nodes}
         for src, dst in self._edges:
+            if src not in self._nodes:
+                raise ValueError(f"Edge references unknown source node {src}")
+            if dst not in self._nodes:
+                raise ValueError(f"Edge references unknown destination node {dst}")
             successors[src].append(dst)
         return DAGTask(successors, self._nodes)

@@ -109,6 +109,12 @@ class DAGSimulator:
                     sp = wl
 
             if sp == float("inf"):
+                if f_set != set(self.dag.vertices):
+                    unfinished = set(self.dag.vertices) - f_set
+                    raise RuntimeError(
+                        f"Simulation stalled: no progress possible. "
+                        f"Unfinished tasks: {unfinished}"
+                    )
                 break
 
             t += int(sp)

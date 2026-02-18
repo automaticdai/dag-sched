@@ -39,7 +39,8 @@ class Core:
             return (None, False)
 
         self._workload -= t
-        finished = self._workload == 0
+        finished = self._workload <= 0
         if finished:
+            self._workload = 0
             self._idle = True
         return (self._job_id, finished)
