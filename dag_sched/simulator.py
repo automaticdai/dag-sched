@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 from dag_sched.core import Core
 from dag_sched.dag import DAGTask
-from dag_sched.scheduler import Scheduler, SchedulerState
+from dag_sched.scheduler import PreemptiveScheduler, Scheduler, SchedulerState
 
 
 EXECUTION_MODELS = ("WCET", "BCET", "HALF_RANDOM", "FULL_RANDOM")
@@ -50,10 +50,10 @@ class DAGSimulator:
             raise ValueError(f"Unknown execution model: {execution_model}. Choose from {EXECUTION_MODELS}")
         if preemption_cost < 0:
             raise ValueError(f"preemption_cost must be >= 0, got {preemption_cost}")
-        from dag_sched.scheduler import PreemptiveScheduler
         if preemption_cost > 0 and not isinstance(scheduler, PreemptiveScheduler):
             raise ValueError(
-                "preemption_cost is only valid with a PreemptiveScheduler"
+                "preemption_cost > 0 requires a PreemptiveScheduler; "
+                "either use a PreemptiveScheduler or set preemption_cost=0"
             )
         self.dag = dag
         self.num_cores = num_cores
