@@ -44,3 +44,16 @@ class Core:
             self._workload = 0
             self._idle = True
         return (self._job_id, finished)
+
+    def preempt(self) -> int:
+        """Stop the current job, return its remaining workload, become idle.
+
+        Raises RuntimeError if called on an idle core.
+        """
+        if self._idle:
+            raise RuntimeError("preempt() called on idle core")
+        remaining = self._workload
+        self._workload = 0
+        self._job_id = None
+        self._idle = True
+        return remaining
