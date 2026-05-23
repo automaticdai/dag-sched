@@ -106,8 +106,14 @@ while not all tasks finished:
                emit ScheduleEvent(current, *task_start[current], end_time=t)
            swap_cores.append((c, desired))
 
-    7. Advance global clock through the cost interval (no work done by anyone).
-       t += len(swap_cores) * preemption_cost
+    7. Advance global clock through the cost interval (no work done by anyone),
+       but only if at least one currently-running task was actually displaced.
+       Idle-to-task dispatches by themselves do not incur cost.
+       preempted_count = sum(1 for c, _ in swap_cores if running.get(c) is not None)
+       if preempted_count > 0:
+           cost_interval = len(swap_cores) * preemption_cost
+           t += cost_interval
+           for c in cores: c.add_idle_time(cost_interval)  # so utilization stays accurate
 
     8. Pass 2 — dispatch new tasks at the post-cost t.
        for (c, desired) in swap_cores:
@@ -130,7 +136,7 @@ while not all tasks finished:
 
 - **"No change" vs "idle"**: missing key = leave alone. Explicit `None` = preempt without replacement. A scheduler that returns `{}` is a no-op; a scheduler that wants to halt every core returns `{c: None for c in range(num_cores)}`.
 - **Stochastic execution time, sampled once**: `_get_execution_time(task_id)` is called once on first dispatch and the result is stored in `remaining_workload`. Subsequent preemption/resume cycles use the stored remaining time. Re-sampling on resume would be physically nonsensical (a task's true runtime is a property of the job, not of the scheduler).
-- **Preemption cost charged per swap, with global pause**: if N cores swap their running task in one scheduling round, `t` advances by `N * preemption_cost` between pass 1 (preempt) and pass 2 (dispatch). During this interval, no core makes progress — this is a coarse-grained "everything pauses for the OS" model. A core that returns to the same task or is left alone (key missing from `assign`'s result) contributes 0.
+- **Preemption cost charged per swap, with global pause, gated on actual displacement**: cost is charged only in rounds where at least one currently-running task is preempted (displaced from its core). In such rounds, `t` advances by `N * preemption_cost` where N is the count of all core changes in that round (preemptions AND any accompanying idle-to-task dispatches). During this interval, no core makes progress — coarse-grained "everything pauses for the OS" model, and all cores accumulate idle time so utilization stays accurate. A core that returns to the same task or is left alone (key missing from `assign`'s result) contributes 0. A round with only idle-to-task dispatches (no preemption) charges no cost.
 - **Segment recording**: a new segment is opened on dispatch and closed on either natural completion or preemption. Same `ScheduleEvent` shape in both cases.
 
 ## Errors

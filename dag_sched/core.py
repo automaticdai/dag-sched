@@ -57,3 +57,13 @@ class Core:
         self._job_id = None
         self._idle = True
         return remaining
+
+    def add_idle_time(self, t: int) -> None:
+        """Account for `t` time units during which this core was forced idle
+        (e.g., during a global preemption-cost interval). Used by the
+        simulator to keep utilization accurate when time advances without
+        Core.execute() being called.
+        """
+        if t < 0:
+            raise ValueError(f"add_idle_time(t) requires t >= 0, got {t}")
+        self._idle_count += t

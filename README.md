@@ -73,7 +73,7 @@ result = sim.run()
 - Returning `{core_id: task_id}` dispatches a task; `{core_id: None}` idles the core; omitting a `core_id` leaves it alone.
 - A preempted task is returned to the ready queue with its remaining workload and resumes from there.
 - A preempted task produces one `ScheduleEvent` per execution segment (same `task_id`, different `(core_id, start_time, end_time)`).
-- `preemption_cost` adds `swap_count * preemption_cost` time units in any round that involves at least one preemption (a running task being displaced); idle-to-task dispatches do not incur cost.
+- `preemption_cost` adds `swap_count * preemption_cost` time units per round in which at least one running task is displaced; `swap_count` includes any idle-to-task dispatches made in the same round.
 
 ## Loading from Config Files
 

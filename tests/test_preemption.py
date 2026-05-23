@@ -27,6 +27,24 @@ class TestCorePreempt:
             c.preempt()
 
 
+class TestCoreAddIdleTime:
+    def test_add_idle_time_increments_idle_count(self):
+        c = Core()
+        c.add_idle_time(5)
+        assert c.get_idle_count() == 5
+
+    def test_add_idle_time_accumulates(self):
+        c = Core()
+        c.add_idle_time(3)
+        c.add_idle_time(2)
+        assert c.get_idle_count() == 5
+
+    def test_add_idle_time_negative_raises(self):
+        c = Core()
+        with pytest.raises(ValueError):
+            c.add_idle_time(-1)
+
+
 from dag_sched.scheduler import PreemptiveScheduler, Scheduler
 
 
@@ -186,6 +204,30 @@ class TestPreemptiveEventLoop:
         # Round 3 has 2 swaps (core 0: 2->4, core 1: idle->2). Cost adds 2*5=10.
         assert sim5.run().makespan - sim0.run().makespan == 10
 
+    def test_preemption_cost_charges_idle_time_to_all_cores(self):
+        # With preemption_cost=5 and 2 swaps in round 3, 10 units of cost
+        # are charged. All cores should accumulate that as idle time so
+        # utilization is computed correctly.
+        sim0 = DAGSimulator(
+            SWAP_FIXTURE_DAG, num_cores=2,
+            scheduler=ScriptedScheduler(SWAP_FIXTURE_SCRIPT),
+            preemption_cost=0,
+        )
+        sim5 = DAGSimulator(
+            SWAP_FIXTURE_DAG, num_cores=2,
+            scheduler=ScriptedScheduler(SWAP_FIXTURE_SCRIPT),
+            preemption_cost=5,
+        )
+        r0 = sim0.run()
+        r5 = sim5.run()
+        # The 10 units of cost (2 swaps * 5) should show up as additional
+        # idle time on both cores, so utilization * makespan is preserved
+        # (total work done is the same; only the makespan grew).
+        busy_time_0_no_cost = sum(r0.core_utilization[c] * r0.makespan for c in range(2))
+        busy_time_5_with_cost = sum(r5.core_utilization[c] * r5.makespan for c in range(2))
+        # Allow tiny floating-point slack.
+        assert abs(busy_time_0_no_cost - busy_time_5_with_cost) < 1e-9
+
 
 class TestAssignValidation:
     def test_unknown_core_id_raises(self):
@@ -224,6 +266,34 @@ class TestAssignValidation:
 
         sim = DAGSimulator(dag, num_cores=2, scheduler=Bad())
         with pytest.raises(ValueError, match="duplicate"):
+            sim.run()
+
+    def test_migration_without_freeing_source_core_raises(self):
+        # 2 cores, task 2 runs long; scheduler tries to migrate it from
+        # core 0 to core 1 without freeing core 0.
+        dag = DAGTask(
+            successors={1: [2, 3], 2: [4], 3: [4], 4: []},
+            wcet={1: 1, 2: 10, 3: 1, 4: 1},
+        )
+
+        class Bad(PreemptiveScheduler):
+            def __init__(self):
+                self.calls = 0
+
+            def assign(self, ready_queue, running, state):
+                self.calls += 1
+                # Round 1: dispatch source.
+                if self.calls == 1:
+                    return {0: 1}
+                # Round 2: dispatch task 2 to core 0, task 3 to core 1.
+                if self.calls == 2:
+                    return {0: 2, 1: 3}
+                # Round 3: task 3 just finished; bad scheduler tries to
+                # migrate task 2 from core 0 to core 1 without freeing core 0.
+                return {1: 2}
+
+        sim = DAGSimulator(dag, num_cores=2, scheduler=Bad())
+        with pytest.raises(ValueError, match="migrate"):
             sim.run()
 
 

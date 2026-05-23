@@ -140,6 +140,30 @@ class DAGSimulator:
                 )
             seen_tasks.add(task_id)
 
+        # Build a reverse map: task_id -> core_id for currently running tasks.
+        # Check for illegal cross-core migration: a scheduler that assigns a
+        # running task to a *different* core without also changing the source
+        # core's assignment would leave the task effectively running on two
+        # cores simultaneously.  Migration is only valid when the source core
+        # is explicitly reassigned in the same round (to None or another task),
+        # so that Pass 1 preempts the source and frees the task.
+        running_core = {task_id: core_id for core_id, task_id in running.items()}
+        for core_id, task_id in assignment.items():
+            if task_id is None:
+                continue
+            if task_id in running_core and running_core[task_id] != core_id:
+                src = running_core[task_id]
+                # Valid if the source core is explicitly reassigned in this round
+                # to something other than the same task (None or a different task).
+                src_reassigned = src in assignment and assignment[src] != task_id
+                if not src_reassigned:
+                    raise ValueError(
+                        f"assign() returned running task_id {task_id} (currently on core "
+                        f"{src}) for core {core_id}; to migrate a task, "
+                        f"the assignment must also free its current core (e.g. include "
+                        f"{{{src}: None}} or assign a different task to it)."
+                    )
+
     def _run_non_preemptive(self) -> SimulationResult:
         t, cores, schedule, task_start, w_queue, r_queue, f_set = self._init_state()
 
@@ -255,7 +279,10 @@ class DAGSimulator:
                 1 for c, _ in swap_cores if running.get(c) is not None
             )
             if preempted_count > 0:
-                t += len(swap_cores) * self.preemption_cost
+                cost_interval = len(swap_cores) * self.preemption_cost
+                t += cost_interval
+                for core in cores:
+                    core.add_idle_time(cost_interval)
 
             # 5. Pass 2 — dispatch new tasks at the post-cost t.
             for c, desired in swap_cores:
