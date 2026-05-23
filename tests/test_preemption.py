@@ -4,6 +4,9 @@ from __future__ import annotations
 import pytest
 
 from dag_sched.core import Core
+from dag_sched.dag import DAGTask
+from dag_sched.scheduler import PreemptiveScheduler, RandomScheduler, Scheduler
+from dag_sched.simulator import DAGSimulator
 
 
 class TestCorePreempt:
@@ -45,9 +48,6 @@ class TestCoreAddIdleTime:
             c.add_idle_time(-1)
 
 
-from dag_sched.scheduler import PreemptiveScheduler, Scheduler
-
-
 class TestPreemptiveSchedulerABC:
     def test_is_subclass_of_scheduler(self):
         assert issubclass(PreemptiveScheduler, Scheduler)
@@ -66,29 +66,20 @@ class TestPreemptiveSchedulerABC:
             Sched().select_task([1], None)
 
 
-from dag_sched.dag import DAGTask
-from dag_sched.scheduler import RandomScheduler
-from dag_sched.simulator import DAGSimulator
-
-
 def _minimal_dag() -> DAGTask:
     """Two-node line DAG; passes the simulator's single-source/single-sink check."""
     return DAGTask(successors={1: [2], 2: []}, wcet={1: 1, 2: 1})
 
 
-def _minimal_preemptive_scheduler() -> PreemptiveScheduler:
-    class S(PreemptiveScheduler):
-        def assign(self, ready_queue, running, state):
-            return {}
-    return S()
-
-
 class TestPreemptionCostValidation:
     def test_negative_preemption_cost_raises(self):
+        class S(PreemptiveScheduler):
+            def assign(self, ready_queue, running, state):
+                return {}
         with pytest.raises(ValueError, match="preemption_cost"):
             DAGSimulator(
                 _minimal_dag(), num_cores=1,
-                scheduler=_minimal_preemptive_scheduler(),
+                scheduler=S(),
                 preemption_cost=-1,
             )
 
@@ -101,18 +92,23 @@ class TestPreemptionCostValidation:
             )
 
     def test_zero_cost_with_non_preemptive_scheduler_ok(self):
-        DAGSimulator(
+        sim = DAGSimulator(
             _minimal_dag(), num_cores=1,
             scheduler=RandomScheduler(),
             preemption_cost=0,
         )
+        assert sim.preemption_cost == 0
 
     def test_positive_cost_with_preemptive_scheduler_ok(self):
-        DAGSimulator(
+        class S(PreemptiveScheduler):
+            def assign(self, ready_queue, running, state):
+                return {}
+        sim = DAGSimulator(
             _minimal_dag(), num_cores=1,
-            scheduler=_minimal_preemptive_scheduler(),
+            scheduler=S(),
             preemption_cost=5,
         )
+        assert sim.preemption_cost == 5
 
 
 class GreedyPreemptiveScheduler(PreemptiveScheduler):
@@ -228,6 +224,50 @@ class TestPreemptiveEventLoop:
         # Allow tiny floating-point slack.
         assert abs(busy_time_0_no_cost - busy_time_5_with_cost) < 1e-9
 
+    def test_assignment_none_value_preempts_and_idles_core(self):
+        # 3 cores, DAG: 1 -> {2, 3, 4} -> 5.
+        # wcet: 1=1, 2=10, 3=8, 4=6, 5=1.
+        # Timeline:
+        #   t=0: call 1 -> {0: 1}; core 0 runs task 1.
+        #   t=1: call 2 -> {0: 2, 1: 3, 2: 4}; task 1 done; all cores busy.
+        #   t=7: task 4 finishes (wcet=6); call 3 -> {0: None}; preempt task 2
+        #        (3 units used, 7 remaining); core 0 goes idle.
+        #        Core 1 still running task 3 (1 unit left). Simulation advances.
+        #   t=8: task 3 finishes; call 4 -> {0: 2}; dispatch task 2 (7 units).
+        #   t=15: task 2 finishes; call 5 -> {0: 5}; dispatch task 5.
+        #   t=16: task 5 done; DAG complete.
+        dag = DAGTask(
+            successors={1: [2, 3, 4], 2: [5], 3: [5], 4: [5], 5: []},
+            wcet={1: 1, 2: 10, 3: 8, 4: 6, 5: 1},
+        )
+
+        class IdleCore0AfterTask4(PreemptiveScheduler):
+            def __init__(self):
+                self.calls = 0
+            def assign(self, ready_queue, running, state):
+                self.calls += 1
+                if self.calls == 1:        # t=0: dispatch source
+                    return {0: 1}
+                if self.calls == 2:        # t=1: dispatch 2, 3, 4
+                    return {0: 2, 1: 3, 2: 4}
+                if self.calls == 3:        # t=7: task 4 done; idle core 0 (preempt 2)
+                    return {0: None}
+                if self.calls == 4:        # t=8: task 3 done; redispatch task 2
+                    return {0: 2}
+                if 5 in ready_queue:       # t=15: task 2 done; dispatch task 5
+                    return {0: 5}
+                return {}
+
+        sim = DAGSimulator(dag, num_cores=3, scheduler=IdleCore0AfterTask4())
+        result = sim.run()
+        # Task 2 should appear twice: first segment ended at t=7 (preempted),
+        # second segment resumes at t=8 (after task 3 finishes).
+        task_2_events = [e for e in result.schedule if e.task_id == 2]
+        assert len(task_2_events) == 2
+        # First segment runs t=1..7 on core 0 (6 units of the 10, then preempted).
+        assert task_2_events[0].start_time == 1
+        assert task_2_events[0].end_time == 7
+
 
 class TestAssignValidation:
     def test_unknown_core_id_raises(self):
@@ -251,18 +291,13 @@ class TestAssignValidation:
             successors={1: [2, 3], 2: [4], 3: [4], 4: []},
             wcet={1: 1, 2: 5, 3: 5, 4: 1},
         )
+        greedy = GreedyPreemptiveScheduler()
 
         class Bad(PreemptiveScheduler):
             def assign(self, ready_queue, running, state):
                 if 2 in ready_queue and 3 in ready_queue:
                     return {0: 2, 1: 2}
-                # fall back to greedy so we can reach the bad round
-                a = {}
-                ready = list(ready_queue)
-                for c in range(len(state.cores)):
-                    if c not in running and ready:
-                        a[c] = ready.pop(0)
-                return a
+                return greedy.assign(ready_queue, running, state)
 
         sim = DAGSimulator(dag, num_cores=2, scheduler=Bad())
         with pytest.raises(ValueError, match="duplicate"):
@@ -340,18 +375,16 @@ class TestNonPreemptivePathRegression:
     silently shift behavior."""
 
     @pytest.mark.parametrize("seed,expected_makespan", [
-        (0, 7),
-        (1, 7),
-        (7, 7),
+        # Seeds 0 and 2 produce distinct makespans (8 vs 9), confirming
+        # the test catches behavioral drift rather than just trivial regressions.
+        (0, 8),
+        (2, 9),
+        (12, 9),
     ])
     def test_random_scheduler_makespan_matches_baseline(self, seed, expected_makespan):
-        from dag_sched.dag import DAGTask
-        from dag_sched.simulator import DAGSimulator
-        from dag_sched.scheduler import RandomScheduler
-
         dag = DAGTask(
-            successors={1: [2, 3], 2: [4], 3: [4], 4: []},
-            wcet={1: 1, 2: 5, 3: 3, 4: 1},
+            successors={1: [2, 3, 4, 5], 2: [6], 3: [6], 4: [6], 5: [6], 6: []},
+            wcet={1: 1, 2: 3, 3: 2, 4: 4, 5: 2, 6: 1},
         )
         sim = DAGSimulator(dag, num_cores=2, scheduler=RandomScheduler(seed=seed))
         assert sim.run().makespan == expected_makespan
