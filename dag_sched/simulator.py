@@ -75,6 +75,11 @@ class DAGSimulator:
         return wcet
 
     def run(self) -> SimulationResult:
+        if isinstance(self.scheduler, PreemptiveScheduler):
+            return self._run_preemptive()
+        return self._run_non_preemptive()
+
+    def _run_non_preemptive(self) -> SimulationResult:
         t = 0
         cores = [Core() for _ in range(self.num_cores)]
         schedule: list[ScheduleEvent] = []
@@ -148,6 +153,132 @@ class DAGSimulator:
         for m in range(self.num_cores):
             if makespan > 0:
                 idle_time = cores[m].get_idle_count()
+                utilization.append(1.0 - idle_time / makespan)
+            else:
+                utilization.append(0.0)
+
+        return SimulationResult(
+            makespan=makespan,
+            schedule=schedule,
+            core_utilization=utilization,
+        )
+
+    def _run_preemptive(self) -> SimulationResult:
+        t = 0
+        cores = [Core() for _ in range(self.num_cores)]
+        schedule: list[ScheduleEvent] = []
+        task_start: dict[int, tuple[int, int]] = {}
+        remaining_workload: dict[int, int] = {}
+
+        w_queue = list(self.dag.vertices)
+        r_queue: list[int] = []
+        f_set: set[int] = set()
+
+        source = self.dag.source
+        r_queue.append(source)
+        w_queue.remove(source)
+
+        while t < T_MAX:
+            # 1. Move newly-ready tasks to the ready queue.
+            newly_ready = [
+                node for node in w_queue
+                if all(p in f_set for p in self.dag.predecessors[node])
+            ]
+            for node in newly_ready:
+                r_queue.append(node)
+                w_queue.remove(node)
+
+            # 2. Build state + running map, call assign().
+            running: dict[int, int] = {
+                c: cores[c].get_running_task()
+                for c in range(self.num_cores)
+                if not cores[c].is_idle()
+            }
+            state = SchedulerState(
+                dag=self.dag,
+                cores=cores,
+                current_time=t,
+                finished_tasks=set(f_set),
+            )
+            assignment = self.scheduler.assign(list(r_queue), dict(running), state)
+
+            # 3. Pass 1 — preempt every core whose running task is changing.
+            swap_cores: list[tuple[int, int | None]] = []
+            any_preemption = False
+            for c in range(self.num_cores):
+                if c not in assignment:
+                    continue
+                desired = assignment[c]
+                current = running.get(c)
+                if desired == current:
+                    continue
+                if current is not None:
+                    remaining = cores[c].preempt()
+                    remaining_workload[current] = remaining
+                    r_queue.append(current)
+                    core_id, start_time = task_start[current]
+                    schedule.append(ScheduleEvent(
+                        task_id=current, core_id=core_id,
+                        start_time=start_time, end_time=t,
+                    ))
+                    any_preemption = True
+                swap_cores.append((c, desired))
+
+            # 4. Cost interval: charged only when a real preemption occurred,
+            #    for all cores changed in this round (including idle→task migrations).
+            if any_preemption:
+                t += len(swap_cores) * self.preemption_cost
+
+            # 5. Pass 2 — dispatch new tasks at the post-cost t.
+            for c, desired in swap_cores:
+                if desired is None:
+                    continue
+                if desired not in remaining_workload:
+                    remaining_workload[desired] = self._get_execution_time(desired)
+                cores[c].assign(
+                    job_id=desired,
+                    execution_time=remaining_workload[desired],
+                )
+                r_queue.remove(desired)
+                task_start[desired] = (c, t)
+
+            # 6. Advance time to the next event boundary.
+            sp = float("inf")
+            for core in cores:
+                wl = core.get_workload()
+                if wl > 0 and wl < sp:
+                    sp = wl
+
+            if sp == float("inf"):
+                if f_set != set(self.dag.vertices):
+                    unfinished = set(self.dag.vertices) - f_set
+                    raise RuntimeError(
+                        f"Simulation stalled: no progress possible. "
+                        f"Unfinished tasks: {unfinished}"
+                    )
+                break
+
+            t += int(sp)
+            for c in range(self.num_cores):
+                task_id, finished = cores[c].execute(int(sp))
+                if finished:
+                    f_set.add(task_id)
+                    core_id, start_time = task_start[task_id]
+                    schedule.append(ScheduleEvent(
+                        task_id=task_id, core_id=core_id,
+                        start_time=start_time, end_time=t,
+                    ))
+                    self.scheduler.on_task_complete(task_id, t)
+                    remaining_workload.pop(task_id, None)
+
+            if f_set == set(self.dag.vertices):
+                break
+
+        makespan = t
+        utilization = []
+        for c in range(self.num_cores):
+            if makespan > 0:
+                idle_time = cores[c].get_idle_count()
                 utilization.append(1.0 - idle_time / makespan)
             else:
                 utilization.append(0.0)
