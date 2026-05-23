@@ -225,3 +225,40 @@ class TestAssignValidation:
         sim = DAGSimulator(dag, num_cores=2, scheduler=Bad())
         with pytest.raises(ValueError, match="duplicate"):
             sim.run()
+
+
+class TestExecutionTimeSampledOncePerTask:
+    """Verifies that `_get_execution_time` is called at most once per task,
+    even when the task is preempted and later resumed. This is the property
+    that makes stochastic execution models (HALF_RANDOM, FULL_RANDOM) yield
+    physically meaningful results — a task's true runtime is a property of
+    the job, not of the scheduler's preemption decisions."""
+
+    def test_preempted_task_is_not_resampled_on_resume(self):
+        # SWAP_FIXTURE preempts task 2 after 1 unit (on core 0) and resumes
+        # it on core 1. Under WCET the actual values don't change; what we
+        # check is that the simulator caches the workload instead of asking
+        # `_get_execution_time` for a fresh sample on resume.
+        sim = DAGSimulator(
+            SWAP_FIXTURE_DAG, num_cores=2,
+            scheduler=ScriptedScheduler(SWAP_FIXTURE_SCRIPT),
+        )
+        sample_counts: dict[int, int] = {}
+        original_get_execution_time = sim._get_execution_time
+
+        def counting_get_execution_time(task_id: int) -> int:
+            sample_counts[task_id] = sample_counts.get(task_id, 0) + 1
+            return original_get_execution_time(task_id)
+
+        sim._get_execution_time = counting_get_execution_time  # type: ignore[method-assign]
+        sim.run()
+
+        # All 5 tasks were dispatched at least once.
+        assert set(sample_counts.keys()) == {1, 2, 3, 4, 5}
+        # Crucially: task 2 was dispatched twice (preempt + resume) but
+        # `_get_execution_time` was called only once — the cached remaining
+        # workload was used on resume.
+        assert sample_counts[2] == 1
+        # All other tasks are dispatched exactly once.
+        for task_id in (1, 3, 4, 5):
+            assert sample_counts[task_id] == 1
