@@ -117,6 +117,11 @@ class DAGSimulator:
         ready_queue: list[int],
         running: dict[int, int],
     ) -> None:
+        if not isinstance(assignment, dict):
+            raise ValueError(
+                f"assign() must return a dict[int, int | None], got "
+                f"{type(assignment).__name__}"
+            )
         seen_tasks: set[int] = set()
         valid_tasks = set(ready_queue) | set(running.values())
         for core_id, task_id in assignment.items():
@@ -182,13 +187,13 @@ class DAGSimulator:
                 current_time=t,
                 finished_tasks=set(f_set),
             )
-            for m in range(self.num_cores):
-                if cores[m].is_idle() and r_queue:
+            for c in range(self.num_cores):
+                if cores[c].is_idle() and r_queue:
                     task_id = self.scheduler.select_task(list(r_queue), state)
                     exec_time = self._get_execution_time(task_id)
-                    cores[m].assign(job_id=task_id, execution_time=exec_time)
+                    cores[c].assign(job_id=task_id, execution_time=exec_time)
                     r_queue.remove(task_id)
-                    task_start[task_id] = (m, t)
+                    task_start[task_id] = (c, t)
 
             sp = float("inf")
             for core in cores:
@@ -206,8 +211,8 @@ class DAGSimulator:
                 break
 
             t += int(sp)
-            for m in range(self.num_cores):
-                task_id, finished = cores[m].execute(int(sp))
+            for c in range(self.num_cores):
+                task_id, finished = cores[c].execute(int(sp))
                 if finished:
                     f_set.add(task_id)
                     core_id, start_time = task_start[task_id]
@@ -294,6 +299,14 @@ class DAGSimulator:
                     job_id=desired,
                     execution_time=remaining_workload[desired],
                 )
+                if desired not in r_queue:
+                    raise RuntimeError(
+                        f"Internal error: task {desired} dispatched to core "
+                        f"{c} but not present in ready queue {r_queue}. "
+                        f"This usually indicates an assign() return that "
+                        f"references an already-running task without freeing "
+                        f"its source core."
+                    )
                 r_queue.remove(desired)
                 task_start[desired] = (c, t)
 

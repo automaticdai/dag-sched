@@ -53,7 +53,16 @@ class PreemptiveScheduler(Scheduler):
       - core_id: task_id      : "this task should run here" (dispatch, or
                                  preempt the current task if different)
 
+    `assign` receives:
+      - ready_queue: list of task_ids currently waiting to run
+      - running:     dict mapping core_id -> task_id for *non-idle* cores;
+                     idle cores are absent from this dict
+      - state:       a SchedulerState snapshot (dag, cores, current_time,
+                     finished_tasks)
+
     A preempted task goes back to the ready queue with its remaining workload.
+    The inherited `on_task_complete(task_id, time)` hook is called when a task
+    finishes (not when it is preempted).
     """
 
     @abstractmethod
