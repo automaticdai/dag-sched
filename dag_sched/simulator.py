@@ -111,6 +111,35 @@ class DAGSimulator:
             makespan=t, schedule=schedule, core_utilization=utilization,
         )
 
+    def _validate_assignment(
+        self,
+        assignment: dict[int, int | None],
+        ready_queue: list[int],
+        running: dict[int, int],
+    ) -> None:
+        seen_tasks: set[int] = set()
+        valid_tasks = set(ready_queue) | set(running.values())
+        for core_id, task_id in assignment.items():
+            if not (0 <= core_id < self.num_cores):
+                raise ValueError(
+                    f"assign() returned invalid core_id {core_id}; "
+                    f"valid range is [0, {self.num_cores})"
+                )
+            if task_id is None:
+                continue
+            if task_id not in valid_tasks:
+                raise ValueError(
+                    f"assign() returned task_id {task_id} which is neither "
+                    f"in the ready queue {ready_queue} nor currently running "
+                    f"{list(running.values())}"
+                )
+            if task_id in seen_tasks:
+                raise ValueError(
+                    f"assign() returned duplicate task_id {task_id} on "
+                    f"multiple cores; each task can run on at most one core"
+                )
+            seen_tasks.add(task_id)
+
     def _run_non_preemptive(self) -> SimulationResult:
         t, cores, schedule, task_start, w_queue, r_queue, f_set = self._init_state()
 
@@ -198,6 +227,7 @@ class DAGSimulator:
                 finished_tasks=set(f_set),
             )
             assignment = self.scheduler.assign(list(r_queue), dict(running), state)
+            self._validate_assignment(assignment, list(r_queue), dict(running))
 
             # 3. Pass 1 — preempt every core whose running task is changing.
             swap_cores: list[tuple[int, int | None]] = []

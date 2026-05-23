@@ -185,3 +185,43 @@ class TestPreemptiveEventLoop:
         )
         # Round 3 has 2 swaps (core 0: 2->4, core 1: idle->2). Cost adds 2*5=10.
         assert sim5.run().makespan - sim0.run().makespan == 10
+
+
+class TestAssignValidation:
+    def test_unknown_core_id_raises(self):
+        class Bad(PreemptiveScheduler):
+            def assign(self, ready_queue, running, state):
+                return {99: ready_queue[0]} if ready_queue else {}
+        sim = DAGSimulator(_minimal_dag(), num_cores=1, scheduler=Bad())
+        with pytest.raises(ValueError, match="core_id"):
+            sim.run()
+
+    def test_unknown_task_id_raises(self):
+        class Bad(PreemptiveScheduler):
+            def assign(self, ready_queue, running, state):
+                return {0: 999}
+        sim = DAGSimulator(_minimal_dag(), num_cores=1, scheduler=Bad())
+        with pytest.raises(ValueError, match="task_id"):
+            sim.run()
+
+    def test_same_task_on_two_cores_raises(self):
+        dag = DAGTask(
+            successors={1: [2, 3], 2: [4], 3: [4], 4: []},
+            wcet={1: 1, 2: 5, 3: 5, 4: 1},
+        )
+
+        class Bad(PreemptiveScheduler):
+            def assign(self, ready_queue, running, state):
+                if 2 in ready_queue and 3 in ready_queue:
+                    return {0: 2, 1: 2}
+                # fall back to greedy so we can reach the bad round
+                a = {}
+                ready = list(ready_queue)
+                for c in range(len(state.cores)):
+                    if c not in running and ready:
+                        a[c] = ready.pop(0)
+                return a
+
+        sim = DAGSimulator(dag, num_cores=2, scheduler=Bad())
+        with pytest.raises(ValueError, match="duplicate"):
+            sim.run()
