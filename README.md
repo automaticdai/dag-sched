@@ -49,6 +49,32 @@ class HighestWCETFirst(Scheduler):
         return max(ready_queue, key=lambda t: state.dag.wcet[t])
 ```
 
+## Preemptive Scheduling
+
+For algorithms that need to interrupt and reassign running tasks, subclass `PreemptiveScheduler` and implement `assign`. The simulator consults it at every event boundary and applies the full core→task assignment, preempting tasks whose assignment has changed.
+
+```python
+from dag_sched import DAGTask, DAGSimulator, PreemptiveScheduler
+
+class GreedyPreemptive(PreemptiveScheduler):
+    def assign(self, ready_queue, running, state):
+        assignment = {}
+        ready = list(ready_queue)
+        for c in range(len(state.cores)):
+            if c not in running and ready:
+                assignment[c] = ready.pop(0)
+        return assignment
+
+dag = DAGTask.builder().add_node(1, wcet=1).add_node(2, wcet=1).add_edge(1, 2).build()
+sim = DAGSimulator(dag, num_cores=2, scheduler=GreedyPreemptive(), preemption_cost=0)
+result = sim.run()
+```
+
+- Returning `{core_id: task_id}` dispatches a task; `{core_id: None}` idles the core; omitting a `core_id` leaves it alone.
+- A preempted task is returned to the ready queue with its remaining workload and resumes from there.
+- A preempted task produces one `ScheduleEvent` per execution segment (same `task_id`, different `(core_id, start_time, end_time)`).
+- `preemption_cost` adds `swap_count * preemption_cost` time units per round in which at least one running task is displaced; `swap_count` includes any idle-to-task dispatches made in the same round.
+
 ## Loading from Config Files
 
 DAGs can be loaded from JSON or YAML:

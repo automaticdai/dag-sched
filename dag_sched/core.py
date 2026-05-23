@@ -44,3 +44,26 @@ class Core:
             self._workload = 0
             self._idle = True
         return (self._job_id, finished)
+
+    def preempt(self) -> int:
+        """Stop the current job, return its remaining workload, become idle.
+
+        Raises RuntimeError if called on an idle core.
+        """
+        if self._idle:
+            raise RuntimeError("preempt() called on idle core")
+        remaining = self._workload
+        self._workload = 0
+        self._job_id = None
+        self._idle = True
+        return remaining
+
+    def add_idle_time(self, t: int) -> None:
+        """Account for `t` time units during which this core was forced idle
+        (e.g., during a global preemption-cost interval). Used by the
+        simulator to keep utilization accurate when time advances without
+        Core.execute() being called.
+        """
+        if t < 0:
+            raise ValueError(f"add_idle_time(t) requires t >= 0, got {t}")
+        self._idle_count += t
