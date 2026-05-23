@@ -44,13 +44,22 @@ class DAGSimulator:
         scheduler: Scheduler,
         execution_model: str = "WCET",
         seed: int | None = None,
+        preemption_cost: int = 0,
     ) -> None:
         if execution_model not in EXECUTION_MODELS:
             raise ValueError(f"Unknown execution model: {execution_model}. Choose from {EXECUTION_MODELS}")
+        if preemption_cost < 0:
+            raise ValueError(f"preemption_cost must be >= 0, got {preemption_cost}")
+        from dag_sched.scheduler import PreemptiveScheduler
+        if preemption_cost > 0 and not isinstance(scheduler, PreemptiveScheduler):
+            raise ValueError(
+                "preemption_cost is only valid with a PreemptiveScheduler"
+            )
         self.dag = dag
         self.num_cores = num_cores
         self.scheduler = scheduler
         self.execution_model = execution_model
+        self.preemption_cost = preemption_cost
         self._rng = _random.Random(seed)
 
     def _get_execution_time(self, node_id: int) -> int:
