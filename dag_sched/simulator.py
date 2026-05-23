@@ -79,19 +79,40 @@ class DAGSimulator:
             return self._run_preemptive()
         return self._run_non_preemptive()
 
-    def _run_non_preemptive(self) -> SimulationResult:
-        t = 0
-        cores = [Core() for _ in range(self.num_cores)]
-        schedule: list[ScheduleEvent] = []
-        task_start: dict[int, tuple[int, int]] = {}
+    def _init_state(self) -> tuple[
+        int, list[Core], list[ScheduleEvent],
+        dict[int, tuple[int, int]],
+        list[int], list[int], set[int],
+    ]:
+        """Initialize simulator state.
 
+        Returns (t, cores, schedule, task_start, w_queue, r_queue, f_set).
+        """
+        cores = [Core() for _ in range(self.num_cores)]
         w_queue = list(self.dag.vertices)
         r_queue: list[int] = []
         f_set: set[int] = set()
-
         source = self.dag.source
         r_queue.append(source)
         w_queue.remove(source)
+        return 0, cores, [], {}, w_queue, r_queue, f_set
+
+    def _build_result(
+        self, t: int, cores: list[Core], schedule: list[ScheduleEvent]
+    ) -> SimulationResult:
+        utilization = []
+        for c in range(self.num_cores):
+            if t > 0:
+                idle_time = cores[c].get_idle_count()
+                utilization.append(1.0 - idle_time / t)
+            else:
+                utilization.append(0.0)
+        return SimulationResult(
+            makespan=t, schedule=schedule, core_utilization=utilization,
+        )
+
+    def _run_non_preemptive(self) -> SimulationResult:
+        t, cores, schedule, task_start, w_queue, r_queue, f_set = self._init_state()
 
         while t < T_MAX:
             newly_ready = []
@@ -148,35 +169,11 @@ class DAGSimulator:
             if f_set == set(self.dag.vertices):
                 break
 
-        makespan = t
-        utilization = []
-        for m in range(self.num_cores):
-            if makespan > 0:
-                idle_time = cores[m].get_idle_count()
-                utilization.append(1.0 - idle_time / makespan)
-            else:
-                utilization.append(0.0)
-
-        return SimulationResult(
-            makespan=makespan,
-            schedule=schedule,
-            core_utilization=utilization,
-        )
+        return self._build_result(t, cores, schedule)
 
     def _run_preemptive(self) -> SimulationResult:
-        t = 0
-        cores = [Core() for _ in range(self.num_cores)]
-        schedule: list[ScheduleEvent] = []
-        task_start: dict[int, tuple[int, int]] = {}
+        t, cores, schedule, task_start, w_queue, r_queue, f_set = self._init_state()
         remaining_workload: dict[int, int] = {}
-
-        w_queue = list(self.dag.vertices)
-        r_queue: list[int] = []
-        f_set: set[int] = set()
-
-        source = self.dag.source
-        r_queue.append(source)
-        w_queue.remove(source)
 
         while t < T_MAX:
             # 1. Move newly-ready tasks to the ready queue.
@@ -204,7 +201,6 @@ class DAGSimulator:
 
             # 3. Pass 1 — preempt every core whose running task is changing.
             swap_cores: list[tuple[int, int | None]] = []
-            any_preemption = False
             for c in range(self.num_cores):
                 if c not in assignment:
                     continue
@@ -221,12 +217,14 @@ class DAGSimulator:
                         task_id=current, core_id=core_id,
                         start_time=start_time, end_time=t,
                     ))
-                    any_preemption = True
                 swap_cores.append((c, desired))
 
-            # 4. Cost interval: charged only when a real preemption occurred,
-            #    for all cores changed in this round (including idle→task migrations).
-            if any_preemption:
+            # 4. Cost interval: charged only when at least one running task was
+            #    actually displaced (not idle→task dispatches).
+            preempted_count = sum(
+                1 for c, _ in swap_cores if running.get(c) is not None
+            )
+            if preempted_count > 0:
                 t += len(swap_cores) * self.preemption_cost
 
             # 5. Pass 2 — dispatch new tasks at the post-cost t.
@@ -274,17 +272,4 @@ class DAGSimulator:
             if f_set == set(self.dag.vertices):
                 break
 
-        makespan = t
-        utilization = []
-        for c in range(self.num_cores):
-            if makespan > 0:
-                idle_time = cores[c].get_idle_count()
-                utilization.append(1.0 - idle_time / makespan)
-            else:
-                utilization.append(0.0)
-
-        return SimulationResult(
-            makespan=makespan,
-            schedule=schedule,
-            core_utilization=utilization,
-        )
+        return self._build_result(t, cores, schedule)
