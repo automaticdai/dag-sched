@@ -262,3 +262,26 @@ class TestExecutionTimeSampledOncePerTask:
         # All other tasks are dispatched exactly once.
         for task_id in (1, 3, 4, 5):
             assert sample_counts[task_id] == 1
+
+
+class TestNonPreemptivePathRegression:
+    """Pins the existing non-preemptive code path so the new dispatch in
+    DAGSimulator.run() and the refactor into _run_non_preemptive cannot
+    silently shift behavior."""
+
+    @pytest.mark.parametrize("seed,expected_makespan", [
+        (0, 7),
+        (1, 7),
+        (7, 7),
+    ])
+    def test_random_scheduler_makespan_matches_baseline(self, seed, expected_makespan):
+        from dag_sched.dag import DAGTask
+        from dag_sched.simulator import DAGSimulator
+        from dag_sched.scheduler import RandomScheduler
+
+        dag = DAGTask(
+            successors={1: [2, 3], 2: [4], 3: [4], 4: []},
+            wcet={1: 1, 2: 5, 3: 3, 4: 1},
+        )
+        sim = DAGSimulator(dag, num_cores=2, scheduler=RandomScheduler(seed=seed))
+        assert sim.run().makespan == expected_makespan
