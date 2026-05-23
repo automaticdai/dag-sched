@@ -41,3 +41,31 @@ class RandomScheduler(Scheduler):
 
     def select_task(self, ready_queue: list[int], state: SchedulerState) -> int:
         return self._rng.choice(ready_queue)
+
+
+class PreemptiveScheduler(Scheduler):
+    """Scheduler that produces a full core→task assignment each event boundary.
+
+    The simulator calls `assign(...)` at every event boundary. The returned
+    dict maps `core_id -> task_id_or_None`:
+      - missing key for a core: "no change" (don't preempt; don't dispatch)
+      - core_id: None         : "idle this core" (preempt without replacement)
+      - core_id: task_id      : "this task should run here" (dispatch, or
+                                 preempt the current task if different)
+
+    A preempted task goes back to the ready queue with its remaining workload.
+    """
+
+    @abstractmethod
+    def assign(
+        self,
+        ready_queue: list[int],
+        running: dict[int, int],
+        state: SchedulerState,
+    ) -> dict[int, int | None]:
+        ...
+
+    def select_task(self, ready_queue: list[int], state: SchedulerState) -> int:
+        raise NotImplementedError(
+            "PreemptiveScheduler uses assign(); select_task() is not called."
+        )

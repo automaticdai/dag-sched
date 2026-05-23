@@ -25,3 +25,24 @@ class TestCorePreempt:
         c = Core()
         with pytest.raises(RuntimeError):
             c.preempt()
+
+
+from dag_sched.scheduler import PreemptiveScheduler, Scheduler
+
+
+class TestPreemptiveSchedulerABC:
+    def test_is_subclass_of_scheduler(self):
+        assert issubclass(PreemptiveScheduler, Scheduler)
+
+    def test_cannot_instantiate_without_assign(self):
+        class Incomplete(PreemptiveScheduler):
+            pass
+        with pytest.raises(TypeError):
+            Incomplete()
+
+    def test_select_task_raises_not_implemented(self):
+        class Sched(PreemptiveScheduler):
+            def assign(self, ready_queue, running, state):
+                return {}
+        with pytest.raises(NotImplementedError):
+            Sched().select_task([1], None)
